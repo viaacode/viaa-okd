@@ -1,0 +1,185 @@
+apiVersion: template.openshift.io/v1
+kind: Template
+labels:
+  template: viaa-postgresql
+metadata:
+  name: viaa-postgresql
+  annotations:
+    description: A postgresql database with associated service and persistent volume 
+    openshift.io/display-name: Viaa PostgreSQL
+    openshift.io/long-description: >
+        This template defines a postgresql database based on the docker.io library 
+        postgres image (https://docs.docker.com/samples/library/postgres/). 
+        It creates a persistent volume, secret, service and deploymentconfig.
+    tags: database,postgresql 
+    openshift.io/provider-display-name: Viaa 
+    iconClass: icon-postgresql  
+message: "Your database name is ready @ postgres://${NAME}:${POSTGRESQL_PASSWORD}@pg-${NAME}-${ENV}/${NAME}" 
+objects:
+  - kind: DeploymentConfig
+    apiVersion: v1
+    metadata:
+      name: pg-${NAME}-${ENV}
+      labels:
+        postgres: ${POSTGRESQL_VERSION}
+        app: ${NAME}
+        env: ${ENV}
+    spec:
+      replicas: 1
+      selector:
+        deploymentconfig: pg-${NAME}-${ENV}
+      strategy:
+        type: Recreate
+      template:
+        metadata:
+          labels:
+            deploymentconfig: pg-${NAME}-${ENV}
+        spec:
+          containers:
+          - capabilities: {}
+            env:
+            - name: PGDATA
+              value: /var/lib/postgresql/data/dbs
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  key: database-user
+                  name: pg-${NAME}-${ENV}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  key: database-password
+                  name: pg-${NAME}-${ENV}
+            - name: POSTGRES_DATABASE
+              valueFrom:
+                secretKeyRef:
+                  key: database-name
+                  name: pg-${NAME}-${ENV}
+            image: docker.io/postgres:${POSTGRESQL_VERSION}
+            imagePullPolicy: IfNotPresent
+            name: postgresql
+            readinessProbe:
+              exec:
+                command:
+                - /bin/sh
+                - -c
+                - /usr/bin/pg_isready -U ${POSTGRES_USER} -h 127.0.0.1 -d ${POSTGRES_DATABASE}
+              initialDelaySeconds: 5
+              periodSeconds: 30
+              failureThreshold: 2
+              timeoutSeconds: 3
+            livenessProbe:
+              exec:
+                command:
+                - /bin/sh
+                - -c 
+                - /usr/bin/pg_isready -U ${POSTGRES_USER}  -d  ${POSTGRES_DATABASE} || [ $? -lt 2 ]
+              initialDelaySeconds: 30
+              periodSeconds: 30
+              failureThreshold: 3
+              timeoutSeconds: 3
+            ports:
+            - containerPort: 5432
+              protocol: TCP
+            resources:
+              limits:
+                memory: ${MEMORY_LIMIT}
+            securityContext:
+              capabilities: {}
+            terminationMessagePath: /dev/termination-log
+            volumeMounts:
+            - mountPath: /var/lib/postgresql/data
+              name: pg-data
+          dnsPolicy: ClusterFirst
+          restartPolicy: Always
+          volumes:
+          - name: pg-data
+            persistentVolumeClaim:
+              claimName: pg-${NAME}-${ENV}
+      triggers:
+      - type: ConfigChange
+  - kind: Secret
+    apiVersion: v1
+    metadata:
+      annotations:
+        template.openshift.io/expose-database_name: '{.data[''database-name'']}'
+        template.openshift.io/expose-password: '{.data[''database-password'']}'
+        template.openshift.io/expose-username: '{.data[''database-user'']}'
+        template.openshift.io/expose-url: '{.data[''database-url'']}'
+      name: pg-${NAME}-${ENV}
+      labels:
+        app: ${NAME}
+        env: ${ENV}
+    stringData:
+      database-name: ${NAME}
+      database-password: ${POSTGRESQL_PASSWORD}
+      database-user: ${NAME}
+      database-url: postgres://${NAME}:${POSTGRESQL_PASSWORD}@pg-${NAME}-${ENV}:5432/${NAME}
+  - kind: Service
+    apiVersion: v1
+    metadata:
+      labels:
+        app: ${NAME}
+        env: ${ENV}
+      annotations:
+        template.openshift.io/expose-uri: postgres://{.spec.clusterIP}:{.spec.ports[?(.name=="postgresql")].port}
+      name: pg-${NAME}-${ENV}
+    spec:
+      ports:
+      - name: postgresql
+        port: 5432
+        protocol: TCP
+        targetPort: 5432
+      selector:
+        deploymentconfig: pg-${NAME}-${ENV}
+      sessionAffinity: None
+      type: ClusterIP
+  - kind: PersistentVolumeClaim
+    apiVersion: v1
+    metadata:
+      name: pg-${NAME}-${ENV}
+      labels:
+        app: ${NAME}
+        env: ${ENV}
+    spec:
+      accessModes:
+      - ReadWriteOnce
+      resources:
+        requests:
+          storage: ${VOLUME_CAPACITY}
+parameters:
+  - name: NAME
+    displayName: Postgres databasename and username.
+    required: true
+    description: >
+      Every object created by this templates is labeled app=<Name>.
+      Also used, together with te ENV parameter, as part of the name of the objects.
+  - name: ENV
+    displayName: Environment
+    required: true
+    description: >
+      Environment Name, used in object names.
+      Every objects created by this template gets the label env=<Environment>.
+  - name: MEMORY_LIMIT
+    displayName: Memory Limit
+    required: true
+    value: 512Mi
+    description: Maximum amount of memory the container can use.
+  - name: POSTGRESQL_PASSWORD
+    displayName: PostgreSQL  Password
+    from: '[a-zA-Z0-9]{16}'
+    generate: expression
+    required: true
+    description: Password for the PostgreSQL connection user.
+  - name: VOLUME_CAPACITY
+    displayName: Volume Capacity
+    required: true
+    value: 1Gi
+    description: Volume space available for data, e.g. 512Mi, 2Gi.
+  - name: POSTGRESQL_VERSION
+    displayName: PostgreSQL version
+    required: true
+    value: "11"
+    description: >
+      Version of PostgreSQL image to be used.
+      Must be a valid tag for https://docs.docker.com/samples/library/postgres/
